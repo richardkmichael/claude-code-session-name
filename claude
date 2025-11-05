@@ -1,0 +1,252 @@
+#!/usr/bin/env python
+
+import os
+import sqlite3
+import subprocess
+import sys
+import uuid
+from pathlib import Path
+
+DB_PATH = Path(
+    os.environ.get(
+        "CLAUDE_CODE_SESSION_NAMES_DB",
+        str(Path.home() / ".claude" / "session-names.sqlite"),
+    )
+)
+
+
+def lookup_session_by_name(name):
+    """
+    Look up a session UUID by name.
+    Returns the UUID if found, None otherwise.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT session_id FROM session_names WHERE session_name = ?", (name,)
+    )
+    result = cursor.fetchone()
+
+    conn.close()
+
+    return result["session_id"] if result else None
+
+
+def is_uuid(value):
+    """Check if a value is a valid UUID."""
+    try:
+        uuid.UUID(value)
+        return True
+    except ValueError:
+        return False
+
+
+class Result:
+    """Result of a NameSession.execute() operation."""
+
+    def __init__(self, message, exit_code, error_type=None):
+        self.message = message
+        self.exit_code = exit_code
+        self.error_type = error_type  # None, 'name_exists', or 'uuid_exists'
+
+
+class NameSession:
+    """Command pattern for naming a session."""
+
+    def __init__(self, session_name, session_id):
+        self.session_name = session_name
+        self.session_id = session_id
+
+    @staticmethod
+    def init_db():
+        """Initialize the database if it doesn't exist."""
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS session_names (
+                session_name TEXT PRIMARY KEY,
+                session_id TEXT UNIQUE NOT NULL
+            )
+        """)
+
+        conn.commit()
+        conn.close()
+
+    def execute(self):
+        """
+        Execute the name session operation.
+        Returns a Result object with message, exit_code, and error_type.
+        """
+        # Initialize database if needed
+        if not DB_PATH.exists():
+            NameSession.init_db()
+
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Check if this name already exists
+        cursor.execute(
+            "SELECT session_id FROM session_names WHERE session_name = ?",
+            (self.session_name,),
+        )
+        if cursor.fetchone():
+            conn.close()
+            return Result(
+                f"Error: Session name '{self.session_name}' already exists.",
+                1,
+                "name_exists",
+            )
+
+        # Check if this UUID already exists
+        cursor.execute(
+            "SELECT session_name FROM session_names WHERE session_id = ?",
+            (self.session_id,),
+        )
+        existing_session = cursor.fetchone()
+        if existing_session:
+            conn.close()
+            return Result(
+                f"Error: Session ID {self.session_id} is already named '{existing_session['session_name']}'.",
+                1,
+                "uuid_exists",
+            )
+
+        # Insert the session
+        cursor.execute(
+            "INSERT INTO session_names (session_name, session_id) VALUES (?, ?)",
+            (self.session_name, self.session_id),
+        )
+
+        conn.commit()
+        conn.close()
+        return Result(f"Session name saved, {self.session_name}", 0)
+
+
+def main():
+    # We need to parse arguments manually because we want to intercept --session-name
+    # and --resume before passing everything to the real claude command
+
+    args = sys.argv[1:]
+    session_name = None
+    session_id = None
+    resume_arg = None
+    no_exec_claude = False
+    new_args = []
+
+    i = 0
+    while i < len(args):
+        arg = args[i]
+
+        if arg == "--session-name":
+            if i + 1 >= len(args):
+                print("Error: --session-name requires an argument", file=sys.stderr)
+                sys.exit(1)
+            session_name = args[i + 1]
+            i += 2
+            continue
+
+        elif arg == "--session-id":
+            if i + 1 >= len(args):
+                print("Error: --session-id requires an argument", file=sys.stderr)
+                sys.exit(1)
+            session_id = args[i + 1]
+            i += 2
+            new_args.append(arg)
+            new_args.append(session_id)
+            continue
+
+        elif arg == "--no-exec-claude":
+            no_exec_claude = True
+            i += 1
+            continue
+
+        elif arg == "--resume":
+            if i + 1 >= len(args):
+                # No argument provided to --resume, just pass it through
+                new_args.append(arg)
+                i += 1
+                continue
+
+            resume_arg = args[i + 1]
+            i += 2
+
+            # Check if it's a UUID
+            if is_uuid(resume_arg):
+                new_args.append(arg)
+                new_args.append(resume_arg)
+            else:
+                # Treat it as a session name
+                found_uuid = lookup_session_by_name(resume_arg)
+                if found_uuid:
+                    new_args.append(arg)
+                    new_args.append(found_uuid)
+                else:
+                    print(
+                        f"Error: No session found with name '{resume_arg}'",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+            continue
+
+        else:
+            new_args.append(arg)
+            i += 1
+
+    # Handle --session-name logic
+    if session_name:
+        # Check for unsubstituted $ARGUMENTS placeholder, occurs when the slash-command is used without an argument
+        if session_name == "$ARGUMENTS":
+            print(
+                "Error: Session name required. Usage: /session-name <name>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        # Generate UUID if not provided
+        if not session_id:
+            session_id = str(uuid.uuid4())
+
+        # Execute the name session command
+        result = NameSession(session_name, session_id).execute()
+
+        if result.exit_code != 0:
+            print(result.message, file=sys.stderr)
+            # Only show resume hints when not in --no-exec-claude mode
+            if not no_exec_claude:
+                if result.error_type == "name_exists":
+                    print(
+                        f"""Use "claude --resume '{session_name}'" to resume.""",
+                        file=sys.stderr,
+                    )
+                elif result.error_type == "uuid_exists":
+                    print(
+                        f"""Use "claude --resume {session_id}" to resume.""",
+                        file=sys.stderr,
+                    )
+            sys.exit(1)
+
+        # Add --session-id to the arguments if not already present
+        if "--session-id" not in new_args:
+            new_args.extend(["--session-id", session_id])
+
+        # If --no-exec-claude is set, exit here instead of executing real claude
+        if no_exec_claude:
+            print(result.message)
+            sys.exit(0)
+
+    # Execute the real claude command
+    try:
+        subprocess.run(["claude"] + new_args)
+    except FileNotFoundError:
+        print("Error: 'claude' command not found. Is it installed?", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
