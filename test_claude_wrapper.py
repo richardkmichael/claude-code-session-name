@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 
 import os
-import sys
 import tempfile
 import uuid
 from importlib.machinery import SourceFileLoader
@@ -67,16 +66,38 @@ def test_session_name_with_explicit_id():
 
 
 def test_uuid_uniqueness():
-    """Test: UUID must be unique"""
+    """Test: UUID must be unique - cannot rename existing session"""
     print("\n--- Test 3: UUID uniqueness constraint ---")
 
     duplicate_uuid = "12345678-1234-1234-1234-123456789002"  # Same as previous test
     result = NameSession("different name", duplicate_uuid).execute()
 
-    if result.error_type == "uuid_exists":
-        print("✓ Correctly rejected duplicate UUID")
+    if result.error_type == "session_already_named":
+        print("✓ Correctly rejected rename attempt (session already named 'work')")
     else:
-        print(f"✗ Should have rejected duplicate UUID, got: {result.error_type}")
+        print(
+            f"✗ Should have rejected with 'session_already_named', got: {result.error_type}"
+        )
+
+
+def test_idempotent_naming():
+    """Test: Setting the same name twice should succeed"""
+    print("\n--- Test 3.25: Idempotent naming ---")
+
+    test_uuid = "12345678-1234-1234-1234-123456789003"
+
+    # First call should succeed
+    result1 = NameSession("idempotent-test", test_uuid).execute()
+    if result1.exit_code != 0:
+        print(f"✗ First naming attempt failed: {result1.message}")
+        return
+
+    # Second call with same name and UUID should also succeed
+    result2 = NameSession("idempotent-test", test_uuid).execute()
+    if result2.exit_code == 0:
+        print("✓ Idempotent naming works (setting same name twice succeeds)")
+    else:
+        print(f"✗ Second naming attempt failed: {result2.message}")
 
 
 def test_name_uniqueness():
@@ -135,6 +156,7 @@ if __name__ == "__main__":
     test_session_name_creation()
     test_session_name_with_explicit_id()
     test_uuid_uniqueness()
+    test_idempotent_naming()
     test_name_uniqueness()
     test_lookup_nonexistent_name()
     test_multiple_sessions()

@@ -70,7 +70,8 @@ class NameSession:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS session_names (
                 session_name TEXT PRIMARY KEY,
-                session_id TEXT UNIQUE NOT NULL
+                session_id TEXT UNIQUE NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
@@ -90,31 +91,39 @@ class NameSession:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        # Check if this name already exists
-        cursor.execute(
-            "SELECT session_id FROM session_names WHERE session_name = ?",
-            (self.session_name,),
-        )
-        if cursor.fetchone():
-            conn.close()
-            return Result(
-                f"Error: Session name '{self.session_name}' already exists.",
-                1,
-                "name_exists",
-            )
-
-        # Check if this UUID already exists
+        # Check if this session_id already exists
         cursor.execute(
             "SELECT session_name FROM session_names WHERE session_id = ?",
             (self.session_id,),
         )
-        existing_session = cursor.fetchone()
-        if existing_session:
+        existing_by_id = cursor.fetchone()
+        if existing_by_id:
+            # Current session is already named
+            if existing_by_id["session_name"] == self.session_name:
+                # Trying to set the same name - success
+                conn.close()
+                return Result(f"Session name saved, {self.session_name}", 0)
+            else:
+                # Trying to rename to a different name - error
+                conn.close()
+                return Result(
+                    f"Error: This session is already named '{existing_by_id['session_name']}'.",
+                    1,
+                    "session_already_named",
+                )
+
+        # Check if this name exists for a different session
+        cursor.execute(
+            "SELECT session_id, created_at FROM session_names WHERE session_name = ?",
+            (self.session_name,),
+        )
+        existing_by_name = cursor.fetchone()
+        if existing_by_name:
             conn.close()
             return Result(
-                f"Error: Session ID {self.session_id} is already named '{existing_session['session_name']}'.",
+                f"Error: Session name already in use by session {existing_by_name['session_id']} ({existing_by_name['created_at']}).",
                 1,
-                "uuid_exists",
+                "name_exists",
             )
 
         # Insert the session
