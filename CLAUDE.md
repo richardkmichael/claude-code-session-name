@@ -1,0 +1,1 @@
+- Use `uvx ruff check --fix [files]` and `uvx ruff format [files]` after editing Python code.
