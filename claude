@@ -43,6 +43,26 @@ def is_uuid(value):
         return False
 
 
+def find_claude():
+    """
+    Find the real 'claude' executable in PATH, skipping this wrapper.
+    Returns the path to the executable, or exits if not found.
+    """
+    wrapper_dir = Path(__file__).resolve().parent
+    path_dirs = os.environ.get("PATH", "").split(":")
+
+    for path_dir in path_dirs:
+        path_dir = Path(path_dir).resolve()
+        if path_dir == wrapper_dir:
+            continue  # Skip this wrapper's own directory
+        candidate = path_dir / "claude"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+
+    print("Error: 'claude' command not found.", file=sys.stderr)
+    sys.exit(1)
+
+
 class Result:
     """Result of a NameSession.execute() operation."""
 
@@ -250,11 +270,8 @@ def main():
             sys.exit(0)
 
     # Execute the real claude command
-    try:
-        subprocess.run(["claude"] + new_args)
-    except FileNotFoundError:
-        print("Error: 'claude' command not found. Is it installed?", file=sys.stderr)
-        sys.exit(1)
+    claude = find_claude()
+    subprocess.run([claude] + new_args)
 
 
 if __name__ == "__main__":

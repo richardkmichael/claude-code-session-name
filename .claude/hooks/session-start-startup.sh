@@ -43,7 +43,4 @@
 if [[ -n "${CLAUDE_ENV_FILE}" ]] ; then
   # The SessionStart hook input has the session ID; make it available to slash commands.
   jq -r '"export CLAUDE_CODE_SESSION_ID=\(.session_id)"' >> "${CLAUDE_ENV_FILE}"
-
-  # The `CLAUDE_PROJECT_DIR` variable is only in hooks; use it for the wrapper path in this repo.
-  echo "export CLAUDE_CODE_WRAPPER=${CLAUDE_PROJECT_DIR}/claude" >> "${CLAUDE_ENV_FILE}"
 fi
